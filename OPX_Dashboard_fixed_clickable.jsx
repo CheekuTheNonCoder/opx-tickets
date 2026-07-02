@@ -133,6 +133,7 @@ const Icon = ({ n, s = 16, c }) => {
     customer: "M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2M12 11a4 4 0 100-8 4 4 0 000 8",
     order: "M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4zM3 6h18M16 10a4 4 0 01-8 0",
     report: "M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8",
+    download: "M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3",
     ai: "M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18",
     ops: "M12 20V10M18 20V4M6 20v-4",
     search: "M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0",
@@ -177,6 +178,43 @@ const STATUS_COLORS = {
   PENDING: T.purple, "RE-OPENED": T.red, NEW: T.cyan,
   ACR: T.orange, ASR: T.pink, BOT: T.textSub,
 };
+
+const safeFileName = name => String(name || "export").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "export";
+
+const normalizeExportRow = row => {
+  if (!row || typeof row !== "object") return { value: row };
+  const out = {};
+  Object.entries(row).forEach(([key, value]) => {
+    if (key.startsWith("_") && !["_status", "_daysSinceCreated", "_daysSinceResolved", "_resolutionHrs", "_frtHrs"].includes(key)) return;
+    if (value instanceof Date) out[key] = value.toISOString();
+    else if (value == null) out[key] = "";
+    else if (typeof value !== "object") out[key] = value;
+  });
+  if (row._violation) {
+    out.violationExpected = row._violation.expected || "";
+    out.violationReason = row._violation.reason || "";
+    out.violationDays = row._violation.days || "";
+    out.violationPriority = row._violation.priority || "";
+  }
+  return out;
+};
+
+const downloadCsv = (rows, name) => {
+  const data = Array.isArray(rows) ? rows : [];
+  const csv = Papa.unparse(data.map(normalizeExportRow));
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = safeFileName(name) + ".csv";
+  link.click();
+  URL.revokeObjectURL(link.href);
+};
+
+const ExportButton = ({ rows, name, label = "Export" }) => (
+  <button className="btn btn-ghost" onClick={e => { e.stopPropagation(); downloadCsv(rows, name); }} disabled={!rows?.length} title={"Download " + (name || "export") + " CSV"}>
+    <Icon n="download" s={14} /> {label}
+  </button>
+);
 
 // ─── DATA ENGINE ──────────────────────────────────────────────────────────────
 function processData(rawData, rules) {
@@ -360,11 +398,14 @@ const MiniBar = ({ data, colorFn }) => {
 };
 
 // ─── KPI CARD ─────────────────────────────────────────────────────────────────
-const KpiCard = ({ label, value, sub, accent, icon, badge, onClick, onDoubleClick }) => (
-  <button type="button" className="kpi-card fade-in" style={{ "--accent": accent || T.blue, cursor: (onClick || onDoubleClick) ? "pointer" : "default", textAlign: "left", width: "100%", color: "inherit", font: "inherit" }} onClick={onClick} onDoubleClick={onDoubleClick} disabled={!onClick && !onDoubleClick}>
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+const KpiCard = ({ label, value, sub, accent, icon, badge, onClick, onDoubleClick, exportRows }) => (
+  <div role={onClick || onDoubleClick ? "button" : undefined} tabIndex={onClick || onDoubleClick ? 0 : undefined} className="kpi-card fade-in" style={{ "--accent": accent || T.blue, cursor: (onClick || onDoubleClick) ? "pointer" : "default", textAlign: "left", width: "100%", color: "inherit", font: "inherit" }} onClick={onClick} onDoubleClick={onDoubleClick} onKeyDown={e => { if ((e.key === "Enter" || e.key === " ") && onClick) onClick(e); }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, gap: 8 }}>
       <div style={{ fontSize: 11, fontWeight: 600, color: T.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
-      {icon && <div style={{ color: accent || T.blue, opacity: 0.7 }}><Icon n={icon} s={16} /></div>}
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        {exportRows && <ExportButton rows={exportRows} name={label} label="CSV" />}
+        {icon && <div style={{ color: accent || T.blue, opacity: 0.7 }}><Icon n={icon} s={16} /></div>}
+      </div>
     </div>
     <div className="count-up" style={{ fontSize: 28, fontWeight: 700, color: T.text, lineHeight: 1, marginBottom: 6 }}>{value}</div>
     {sub && <div style={{ fontSize: 11, color: T.textSub }}>{sub}</div>}
@@ -378,10 +419,7 @@ const KpiDrilldown = ({ title, tickets, onClose }) => {
 
   return (
     <div className="card fade-in" style={{ padding: 20, marginBottom: 20, borderColor: "rgba(59,130,246,0.3)" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, gap: 12 }}>
-        <SectionHeader title={title} sub={`${fmt.num(rows.length)} matching tickets`} />
-        <button className="btn btn-ghost" onClick={onClose}><Icon n="close" s={14} /> Close</button>
-      </div>
+      <SectionHeader title={title} sub={`${fmt.num(rows.length)} matching tickets`} action={<div style={{ display: "flex", gap: 8 }}><ExportButton rows={rows} name={title} /><button className="btn btn-ghost" onClick={onClose}><Icon n="close" s={14} /> Close</button></div>} />
 
       {selected && (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 8, padding: 12, marginBottom: 12, background: "rgba(255,255,255,0.03)", borderRadius: 8 }}>
@@ -511,7 +549,7 @@ const ActionCenter = ({ stats, onTicketClick }) => {
 
   return (
     <div className="fade-in">
-      <SectionHeader title="Action Center" sub="What to do today — prioritised by severity" />
+      <SectionHeader title="Action Center" sub="What to do today — prioritised by severity" action={<ExportButton rows={[...stats.acrViolations, ...stats.slaRisk, ...stats.statusMismatch]} name="flagged-action-center-tickets" />} />
       <div style={{ display: "grid", gap: 8 }}>
         {alerts.map((a, i) => {
           const cm = colorMap[a.type];
@@ -532,7 +570,7 @@ const ActionCenter = ({ stats, onTicketClick }) => {
       </div>
 
       <div style={{ marginTop: 24 }}>
-        <SectionHeader title="Top Violations (Auto-Closure Audit)" sub="Tickets that should have been auto-closed" />
+        <SectionHeader title="Top Violations (Auto-Closure Audit)" sub="Tickets that should have been auto-closed" action={<ExportButton rows={stats.acrViolations} name="auto-closure-violations" />} />
         {stats.acrViolations.length === 0
           ? <div style={{ padding: "32px 0", textAlign: "center", color: T.textMuted }}>✅ No auto-closure violations found</div>
           : <div className="table-wrap">
@@ -566,23 +604,23 @@ const DashboardHome = ({ stats, onNav }) => {
   const openDrilldown = (title, tickets) => setDrilldown({ title, tickets });
 
   const kpis = [
-    { label: "Total Tickets", value: fmt.num(stats.total), sub: "All statuses", accent: T.blue, icon: "tickets", onClick: () => openDrilldown("Total Tickets", stats.df) },
-    { label: "Closed", value: fmt.num(stats.closed), sub: `${fmt.pct(stats.closed / stats.total * 100)} of total`, accent: T.green, icon: "check", onClick: () => openDrilldown("Closed Tickets", stats.closedTickets) },
-    { label: "Resolved", value: fmt.num(stats.resolved), sub: "Awaiting auto-close", accent: T.cyan, icon: "star", onClick: () => openDrilldown("Resolved Tickets", stats.resolvedTickets) },
-    { label: "Open", value: fmt.num(stats.open), sub: "Needs agent action", accent: T.amber, icon: "clock", onClick: () => openDrilldown("Open Tickets", stats.openTickets) },
-    { label: "Pending Tickets", value: fmt.num(stats.pending), sub: "Waiting on customer", accent: T.purple, icon: "customer", onClick: () => openDrilldown("Pending Tickets", stats.pendingTickets) },
-    { label: "Reopened Tickets", value: fmt.num(stats.reOpened), sub: `${fmt.pct(stats.reopenedWithin24h.length / (stats.reOpened || 1) * 100)} within 24h`, accent: T.red, icon: "reopen", badge: stats.reOpened > 10 ? { type: "red", label: "Needs attention" } : null, onClick: () => openDrilldown("Reopened Tickets", stats.reopened) },
-    { label: "ACR Tickets", value: fmt.num(stats.acr), sub: "Awaiting auto-close", accent: T.red, icon: "alert", onClick: () => openDrilldown("ACR Tickets", stats.acrTickets) },
-    { label: "ASR Tickets", value: fmt.num(stats.asr), sub: "Awaiting auto-close", accent: T.pink, icon: "alert", onClick: () => openDrilldown("ASR Tickets", stats.asrTickets) },
-    { label: "Open for 7+ Days", value: fmt.num(stats.open7Days.length), sub: "Open age threshold", accent: T.amber, icon: "clock", onClick: () => openDrilldown("Open for 7+ Days", stats.open7Days) },
-    { label: "Auto-Close Errors", value: fmt.num(stats.acrViolations.length), sub: "Should have been closed", accent: T.red, icon: "alert", onClick: () => openDrilldown("Should Auto Close", stats.acrViolations), onDoubleClick: () => onNav("action") },
-    { label: "Auto Close Due", value: fmt.num(stats.autoCloseDue.length), sub: "ACR past 48h", accent: T.red, icon: "alert", onClick: () => openDrilldown("Auto Close Due", stats.autoCloseDue) },
-    { label: "Auto Closed", value: fmt.num(stats.autoClosed.length), sub: "Closed with date", accent: T.green, icon: "check", onClick: () => openDrilldown("Auto Closed", stats.autoClosed) },
-    { label: "SLA At Risk", value: fmt.num(stats.slaRisk.length), sub: "Pending > 3 days", accent: T.amber, icon: "warn", onClick: () => openDrilldown("SLA At Risk", stats.slaRisk) },
-    { label: "Resolution Rate", value: fmt.pct(stats.resolutionRate), sub: "Closed + Resolved", accent: T.green, icon: "trend", onClick: () => openDrilldown("Closed + Resolved Tickets", stats.resolutionRateTickets) },
-    { label: "Avg Resolution", value: fmt.hrs(stats.avgResHrs), sub: "From created to resolved", accent: T.cyan, icon: "clock", onClick: () => openDrilldown("Tickets Used for Avg Resolution", stats.resHrs) },
-    { label: "Avg First Response", value: fmt.hrs(stats.avgFrtHrs), sub: "From first assignment to first agent reply", accent: T.blue, icon: "agents", onClick: () => openDrilldown("Tickets Used for Avg First Response", stats.frtTickets) },
-    { label: "Duplicate Orders", value: fmt.num(stats.duplicateOrders.length), sub: "Multiple tickets per order", accent: T.pink, icon: "duplicate", onClick: () => openDrilldown("Duplicate Order Tickets", stats.duplicateTickets) },
+    { label: "Total Tickets", value: fmt.num(stats.total), sub: "All statuses", accent: T.blue, icon: "tickets", onClick: () => openDrilldown("Total Tickets", stats.df), exportRows: stats.df },
+    { label: "Closed", value: fmt.num(stats.closed), sub: `${fmt.pct(stats.closed / stats.total * 100)} of total`, accent: T.green, icon: "check", onClick: () => openDrilldown("Closed Tickets", stats.closedTickets), exportRows: stats.closedTickets },
+    { label: "Resolved", value: fmt.num(stats.resolved), sub: "Awaiting auto-close", accent: T.cyan, icon: "star", onClick: () => openDrilldown("Resolved Tickets", stats.resolvedTickets), exportRows: stats.resolvedTickets },
+    { label: "Open", value: fmt.num(stats.open), sub: "Needs agent action", accent: T.amber, icon: "clock", onClick: () => openDrilldown("Open Tickets", stats.openTickets), exportRows: stats.openTickets },
+    { label: "Pending Tickets", value: fmt.num(stats.pending), sub: "Waiting on customer", accent: T.purple, icon: "customer", onClick: () => openDrilldown("Pending Tickets", stats.pendingTickets), exportRows: stats.pendingTickets },
+    { label: "Reopened Tickets", value: fmt.num(stats.reOpened), sub: `${fmt.pct(stats.reopenedWithin24h.length / (stats.reOpened || 1) * 100)} within 24h`, accent: T.red, icon: "reopen", badge: stats.reOpened > 10 ? { type: "red", label: "Needs attention" } : null, onClick: () => openDrilldown("Reopened Tickets", stats.reopened), exportRows: stats.reopened },
+    { label: "ACR Tickets", value: fmt.num(stats.acr), sub: "Awaiting auto-close", accent: T.red, icon: "alert", onClick: () => openDrilldown("ACR Tickets", stats.acrTickets), exportRows: stats.acrTickets },
+    { label: "ASR Tickets", value: fmt.num(stats.asr), sub: "Awaiting auto-close", accent: T.pink, icon: "alert", onClick: () => openDrilldown("ASR Tickets", stats.asrTickets), exportRows: stats.asrTickets },
+    { label: "Open for 7+ Days", value: fmt.num(stats.open7Days.length), sub: "Open age threshold", accent: T.amber, icon: "clock", onClick: () => openDrilldown("Open for 7+ Days", stats.open7Days), exportRows: stats.open7Days },
+    { label: "Auto-Close Errors", value: fmt.num(stats.acrViolations.length), sub: "Should have been closed", accent: T.red, icon: "alert", onClick: () => openDrilldown("Should Auto Close", stats.acrViolations), onDoubleClick: () => onNav("action"), exportRows: stats.acrViolations },
+    { label: "Auto Close Due", value: fmt.num(stats.autoCloseDue.length), sub: "ACR past 48h", accent: T.red, icon: "alert", onClick: () => openDrilldown("Auto Close Due", stats.autoCloseDue), exportRows: stats.autoCloseDue },
+    { label: "Auto Closed", value: fmt.num(stats.autoClosed.length), sub: "Closed with date", accent: T.green, icon: "check", onClick: () => openDrilldown("Auto Closed", stats.autoClosed), exportRows: stats.autoClosed },
+    { label: "SLA At Risk", value: fmt.num(stats.slaRisk.length), sub: "Pending > 3 days", accent: T.amber, icon: "warn", onClick: () => openDrilldown("SLA At Risk", stats.slaRisk), exportRows: stats.slaRisk },
+    { label: "Resolution Rate", value: fmt.pct(stats.resolutionRate), sub: "Closed + Resolved", accent: T.green, icon: "trend", onClick: () => openDrilldown("Closed + Resolved Tickets", stats.resolutionRateTickets), exportRows: stats.resolutionRateTickets },
+    { label: "Avg Resolution", value: fmt.hrs(stats.avgResHrs), sub: "From created to resolved", accent: T.cyan, icon: "clock", onClick: () => openDrilldown("Tickets Used for Avg Resolution", stats.resHrs), exportRows: stats.resHrs },
+    { label: "Avg First Response", value: fmt.hrs(stats.avgFrtHrs), sub: "From first assignment to first agent reply", accent: T.blue, icon: "agents", onClick: () => openDrilldown("Tickets Used for Avg First Response", stats.frtTickets), exportRows: stats.frtTickets },
+    { label: "Duplicate Orders", value: fmt.num(stats.duplicateOrders.length), sub: "Multiple tickets per order", accent: T.pink, icon: "duplicate", onClick: () => openDrilldown("Duplicate Order Tickets", stats.duplicateTickets), exportRows: stats.duplicateTickets },
   ];
 
   const topSubcats = Object.entries(stats.subCats).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([k, v]) => ({ k, v }));
@@ -618,22 +656,22 @@ const DashboardHome = ({ stats, onNav }) => {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
         <div className="card" style={{ padding: 20 }}>
-          <SectionHeader title="Top Issues" sub="By ticket count" />
+          <SectionHeader title="Top Issues" sub="By ticket count" action={<ExportButton rows={topSubcats} name="top-issues" />} />
           <MiniBar data={topSubcats} colorFn={i => ACCENT_PALETTE[i % ACCENT_PALETTE.length]} />
         </div>
         <div className="card" style={{ padding: 20 }}>
-          <SectionHeader title="Status Breakdown" sub="Current distribution" />
+          <SectionHeader title="Status Breakdown" sub="Current distribution" action={<ExportButton rows={statusData} name="status-breakdown" />} />
           <MiniBar data={statusData} colorFn={i => STATUS_COLORS[statusData[i]?.k] || T.textSub} />
         </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <div className="card" style={{ padding: 20 }}>
-          <SectionHeader title="Channel Distribution" sub="By volume" />
+          <SectionHeader title="Channel Distribution" sub="By volume" action={<ExportButton rows={channelData} name="channel-distribution" />} />
           <MiniBar data={channelData} colorFn={i => [T.green, T.blue, T.pink, T.amber][i] || T.textSub} />
         </div>
         <div className="card" style={{ padding: 20 }}>
-          <SectionHeader title="Top Brands" sub="By ticket count" />
+          <SectionHeader title="Top Brands" sub="By ticket count" action={<ExportButton rows={topBrands} name="top-brands" />} />
           <MiniBar data={topBrands} colorFn={i => ACCENT_PALETTE[i % ACCENT_PALETTE.length]} />
         </div>
       </div>
@@ -659,7 +697,7 @@ const TicketsView = ({ stats }) => {
 
   return (
     <div className="fade-in">
-      <SectionHeader title="All Tickets" sub={`${fmt.num(filtered.length)} of ${fmt.num(stats.total)} shown`} />
+      <SectionHeader title="All Tickets" sub={`${fmt.num(filtered.length)} of ${fmt.num(stats.total)} shown`} action={<ExportButton rows={filtered} name="filtered-tickets" />} />
       <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
         <input className="input" placeholder="Search ticket ID, customer, order..." value={search} onChange={e => setSearch(e.target.value)} style={{ maxWidth: 320 }} />
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -737,7 +775,7 @@ const TicketsView = ({ stats }) => {
 // ─── AGENTS VIEW ──────────────────────────────────────────────────────────────
 const AgentsView = ({ stats }) => (
   <div className="fade-in">
-    <SectionHeader title="Agent Performance" sub="Based on assigned / first responding agent" />
+    <SectionHeader title="Agent Performance" sub="Based on assigned / first responding agent" action={<ExportButton rows={stats.agents} name="agent-performance" />} />
     <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 14, marginBottom: 20 }}>
       {stats.agents.slice(0, 12).map((a, i) => (
         <div key={i} className="card" style={{ padding: 18 }}>
@@ -818,25 +856,25 @@ const ReopenAnalytics = ({ stats }) => {
 
   return (
     <div className="fade-in">
-      <SectionHeader title="Reopen Analytics" sub="Tracking resolution quality and customer escalations" />
+      <SectionHeader title="Reopen Analytics" sub="Tracking resolution quality and customer escalations" action={<ExportButton rows={reOpened} name="reopen-analytics" />} />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 12, marginBottom: 20 }}>
         {[
-          { label: "Total Reopened", value: fmt.num(reOpened.length), accent: T.red },
-          { label: "Reopen Rate", value: fmt.pct(reOpened.length / total * 100), accent: T.red },
-          { label: "Within 24h", value: fmt.num(within24h.length), accent: T.amber },
-          { label: "Within 7 Days", value: fmt.num(within7d.length), accent: T.amber },
-          { label: "Same Customer", value: fmt.num(multiCustReopen), accent: T.purple },
-          { label: "Same Order", value: fmt.num(multiOrderReopen), accent: T.purple },
+          { label: "Total Reopened", value: fmt.num(reOpened.length), accent: T.red, exportRows: reOpened },
+          { label: "Reopen Rate", value: fmt.pct(reOpened.length / total * 100), accent: T.red, exportRows: reOpened },
+          { label: "Within 24h", value: fmt.num(within24h.length), accent: T.amber, exportRows: within24h },
+          { label: "Within 7 Days", value: fmt.num(within7d.length), accent: T.amber, exportRows: within7d },
+          { label: "Same Customer", value: fmt.num(multiCustReopen), accent: T.purple, exportRows: reOpened.filter(r => r.customerId && custReopen[r.customerId] > 1) },
+          { label: "Same Order", value: fmt.num(multiOrderReopen), accent: T.purple, exportRows: reOpened.filter(r => r.OrderID && r.OrderID !== "-" && orderReopen[r.OrderID] > 1) },
         ].map((k, i) => <KpiCard key={i} {...k} sub="" icon="reopen" />)}
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
         <div className="card" style={{ padding: 20 }}>
-          <SectionHeader title="Agents with Most Reopens" />
+          <SectionHeader title="Agents with Most Reopens" action={<ExportButton rows={topAgentReopens.map(([agent, count]) => ({ agent, count }))} name="agents-with-most-reopens" />} />
           <MiniBar data={topAgentReopens.map(([k, v]) => ({ k: k.split("@")[0], v }))} colorFn={() => T.red} />
         </div>
         <div className="card" style={{ padding: 20 }}>
-          <SectionHeader title="Reopen by Category" />
+          <SectionHeader title="Reopen by Category" action={<ExportButton rows={Object.entries(reOpened.reduce((acc, r) => { const c = r["Ticket Category"] || "-"; acc[c] = (acc[c] || 0) + 1; return acc; }, {})).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([category, count]) => ({ category, count }))} name="reopen-by-category" />} />
           <MiniBar data={
             Object.entries(
               reOpened.reduce((acc, r) => { const c = r["Ticket Category"] || "-"; acc[c] = (acc[c] || 0) + 1; return acc; }, {})
@@ -845,7 +883,7 @@ const ReopenAnalytics = ({ stats }) => {
         </div>
       </div>
 
-      <SectionHeader title="Reopened Ticket List" />
+      <SectionHeader title="Reopened Ticket List" action={<ExportButton rows={reOpened} name="reopened-ticket-list" />} />
       <div className="table-wrap">
         <table>
           <thead><tr>
@@ -877,7 +915,7 @@ const ReopenAnalytics = ({ stats }) => {
 // ─── DUPLICATE DETECTION ─────────────────────────────────────────────────────
 const DuplicateDetection = ({ stats }) => (
   <div className="fade-in">
-    <SectionHeader title="Duplicate Detection" sub={`${stats.duplicateOrders.length} orders with multiple tickets found`} />
+    <SectionHeader title="Duplicate Detection" sub={`${stats.duplicateOrders.length} orders with multiple tickets found`} action={<ExportButton rows={stats.duplicateTickets} name="duplicate-ticket-list" />} />
     {stats.duplicateOrders.length === 0
       ? <div style={{ padding: "40px 0", textAlign: "center", color: T.textMuted }}>✅ No duplicate orders detected</div>
       : stats.duplicateOrders.map((dup, i) => (
@@ -915,7 +953,7 @@ const SlaMonitor = ({ stats, rules }) => {
 
   return (
     <div className="fade-in">
-      <SectionHeader title="SLA Monitor" sub="Tickets breaching configured time rules" />
+      <SectionHeader title="SLA Monitor" sub="Tickets breaching configured time rules" action={<ExportButton rows={stats.slaRisk} name="sla-monitor-flagged-tickets" />} />
       <div style={{ display: "grid", gap: 10, marginBottom: 24 }}>
         {slaData.map((s, i) => (
           <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderRadius: 12, background: T.glass, border: `1px solid ${T.glassBorder}` }}>
@@ -928,7 +966,7 @@ const SlaMonitor = ({ stats, rules }) => {
           </div>
         ))}
       </div>
-      <SectionHeader title="SLA At Risk Tickets" sub="Open/Pending tickets older than 3 days" />
+      <SectionHeader title="SLA At Risk Tickets" sub="Open/Pending tickets older than 3 days" action={<ExportButton rows={stats.slaRisk} name="sla-at-risk-tickets" />} />
       <div className="table-wrap">
         <table>
           <thead><tr>
@@ -1036,7 +1074,7 @@ const AIInsights = ({ stats, rules }) => {
   return (
     <div className="fade-in">
       <SectionHeader title="AI Insights" sub="Powered by Claude AI — auto-analysis of your ticket dump"
-        action={<button className="btn btn-primary" onClick={generateInsights} disabled={loading}>{loading ? <><span className="spin" style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "white", borderRadius: "50%", display: "inline-block" }} /> Analyzing...</> : <><Icon n="ai" s={14} /> Generate Insights</>}</button>} />
+        action={<div style={{ display: "flex", gap: 8 }}>{insights && <ExportButton rows={insights} name="ai-insights" />}<button className="btn btn-primary" onClick={generateInsights} disabled={loading}>{loading ? <><span className="spin" style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "white", borderRadius: "50%", display: "inline-block" }} /> Analyzing...</> : <><Icon n="ai" s={14} /> Generate Insights</>}</button></div>} />
 
       {error && <div style={{ padding: "12px 16px", borderRadius: 10, background: "rgba(239,68,68,0.1)", color: T.red, marginBottom: 16 }}>{error}</div>}
 
@@ -1100,9 +1138,14 @@ const CustomerHealth = ({ stats }) => {
     return { resolved, refunds, riskScore: Math.round(score) };
   };
 
+  const customerExport = filtered.map(c => {
+    const det = getCustomerDetails(c);
+    return { customerId: c.id, customerName: c.name, totalTickets: c.tickets.length, resolved: det.resolved, reopens: c.reopens, refundTickets: det.refunds, riskScore: det.riskScore, lastTicket: c.tickets[0]?.createdAtDate || "" };
+  });
+
   return (
     <div className="fade-in">
-      <SectionHeader title="Customer Health" sub="Per-customer ticket patterns and risk assessment" />
+      <SectionHeader title="Customer Health" sub="Per-customer ticket patterns and risk assessment" action={<ExportButton rows={customerExport} name="customer-health" />} />
       <input className="input" placeholder="Search customer name or ID..." value={search} onChange={e => setSearch(e.target.value)} style={{ maxWidth: 360, marginBottom: 16 }} />
       <div className="table-wrap">
         <table>
@@ -1154,6 +1197,7 @@ const OrderHealth = ({ stats }) => {
           : <div>
             <div style={{ marginBottom: 12 }}>
               <span className="badge badge-blue">{result.length} tickets</span>
+              <span style={{ marginLeft: 8 }}><ExportButton rows={result} name={`order-${search || "tickets"}`} /></span>
               {result.length > 1 && <span className="badge badge-amber" style={{ marginLeft: 8 }}>⚠️ Multiple tickets — possible duplicate</span>}
             </div>
             {result.map((r, i) => (
